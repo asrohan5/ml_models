@@ -108,6 +108,7 @@ print(f'\nFeature matrix shape after preprocessing: {X_train_prep.shape}')
 
 
 #------------------------------------------------------------------------------------
+#Building Models
 
 def get_model_scores(model, X_train, y_train, X_test, y_test):
     model.fit(X_train, y_train)
@@ -138,4 +139,54 @@ drand_preds, drand_acc, drand_prec, drand_rec, drand_cm = get_model_scores(dummy
 #The dummy majority model matches or beats most naive models on accuracy.
 #Accuracy is NOT the right metric. Recall is the primary concern here.
 #A model that reports "93% accuracy" in this context should immediately raise red flags.
+
+
+lr_tn, lr_fp, lr_fn, lr_tp = lr_cm.ravel()
+
+#TN: Safe shifts correctly called safe -> normal operations continue
+#FP: Safe shifts wrongly flagged hazard -> unnecessary evacuation, 8hr production loss
+#FN: Hazardous shifts missed -> workers in rockburst zone — life risk
+#TP: Hazardous shifts correctly caught -> countermeasures deployed, lives saved
+
+#Precision = TP/(TP+FP)
+lr_prec = lr_tp/(lr_tp + lr_fp) 
+#Recall = TP/(TP+FN) 
+lr_rec = lr_tp/(lr_tp + lr_fn)
+
+
+
+#-------------------------------------------------------------------------------------------------------------------------------
+#F Scores
+
+rf_clf = RandomForestClassifier(n_estimators=100, class_weight='balanced', random_state=42)
+
+rf_preds, rf_acc, rf_prec, rf_rec, rf_cm = get_model_scores(rf_clf, X_train_prep, y_train, X_test_prep, y_test)
+
+#F2 (beta=2): Mine safety, medical diagnosis, fraud detection
+#F1 (beta=1): Balanced costs, general classification benchmarks
+#F0.5 (beta=0.5): Spam filters, content moderation (false alarm very costly)
+
+def get_f_scores(model_preds, y_test):
+    model_f1 = f1_score(y_test, model_preds, zero_division=0)
+    model_f2 = fbeta_score(y_test, model_preds, beta=2, zero_division=0)
+    model_f05 = fbeta_score(y_test, model_preds, beta=0.5, zero_division=0)
+
+    return model_f1, model_f2, model_f05
+
+
+lr_f1, lr_f2, lr_f05 = get_f_scores(lr_preds, y_test)
+
+rf_f1, rf_f2, rf_f05 = get_f_scores(rf_preds, y_test)
+
+
+#For mine safety -> we should use F2 (beta=2)
+#Missing a hazard costs orders of magnitude more than a false alarm
+#beta =2 weights recall 4× more than precision')
+
+#F1 hides the asymmetry — it would rank a model with P=0.9, R=0.1 (harmonic mean is symmetric by design)
+
+
+
+
+
 
