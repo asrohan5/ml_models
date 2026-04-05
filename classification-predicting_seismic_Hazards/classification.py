@@ -73,14 +73,14 @@ NUMERIC = [
     'nbumps6', 'nbumps7', 'nbumps89', 'energy', 'maxenergy'
 ]
 
-print('Categorical feature values:')
-for col in CATEGORICAL:
-    print(f'  {col}: {sorted(df[col].unique())}')
+# print('Categorical feature values:')
+# for col in CATEGORICAL:
+#     print(f'  {col}: {sorted(df[col].unique())}')
 
 
 #Energy features — scale range
-for col in ['genergy', 'energy', 'maxenergy']:
-    print(f'  {col}: {df[col].min():.0f} to {df[col].max():,.0f}')
+# for col in ['genergy', 'energy', 'maxenergy']:
+#     print(f'  {col}: {df[col].min():.0f} to {df[col].max():,.0f}')
 
 #Energy spans 10^4 to 10^8 — a 10,000x range
 #This will dominate gradient-based models without scaling
@@ -104,7 +104,7 @@ preprocessor = ColumnTransformer([
 
 X_train_prep = preprocessor.fit_transform(X_train)
 X_test_prep  = preprocessor.transform(X_test)
-print(f'\nFeature matrix shape after preprocessing: {X_train_prep.shape}')
+#print(f'\nFeature matrix shape after preprocessing: {X_train_prep.shape}')
 
 
 #------------------------------------------------------------------------------------
@@ -114,7 +114,7 @@ def get_model_scores(model, X_train, y_train, X_test, y_test):
     model.fit(X_train, y_train)
     model_preds = model.predict(X_test)
     model_acc = accuracy_score(y_test, model_preds)
-    model_prec = precision_score(y_test, model_preds)
+    model_prec = precision_score(y_test, model_preds, zero_division=0)
     model_rec = recall_score(y_test, model_preds, zero_division=0)
     model_cm = confusion_matrix(y_test, model_preds)
     
@@ -199,15 +199,15 @@ def get_predict_proba(model, X_test, y_test):
     fpr_model, tpr_model, _ = roc_curve(y_test, y_proba_model)
     auc_model = roc_auc_score(y_test, y_proba_model)
     #PR
-    pre_model, rec_model = precision_recall_curve(y_test, y_proba_model)
+    pre_model, rec_model, _ = precision_recall_curve(y_test, y_proba_model)
     ap_model = average_precision_score(y_test, y_proba_model)
 
-    return fpr_model,tpr_model, auc_model, pre_model, rec_model, ap_model
+    return fpr_model,tpr_model, auc_model, pre_model, rec_model, ap_model, y_proba_model
 
 
-fpr_lr, tpr_lr, auc_lr, pre_lr, rec_lr, ap_lr = get_predict_proba(lr_clf, X_test_prep, y_test)
+fpr_lr, tpr_lr, auc_lr, pre_lr, rec_lr, ap_lr, y_proba_lr = get_predict_proba(lr_clf, X_test_prep, y_test)
 
-fpr_rf, tpr_rf, auc_rf, pre_rf, rec_rf, ap_rf = get_predict_proba(rf_clf, X_test_prep, y_test)
+fpr_rf, tpr_rf, auc_rf, pre_rf, rec_rf, ap_rf, y_proba_rf = get_predict_proba(rf_clf, X_test_prep, y_test)
 
 
 
@@ -225,3 +225,52 @@ fpr_rf, tpr_rf, auc_rf, pre_rf, rec_rf, ap_rf = get_predict_proba(rf_clf, X_test
 
 
 
+
+#----------------------------------------------------------------------------------------------------------------------
+
+skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+
+
+#Tuning threshold the right way: from cv out-of-fold predictions
+cv_probs = cross_val_predict(lr_clf, X_train_prep, y_train, cv=skf, method='predict_proba')[:,1]
+
+pre_cv, rec_cv, thr_cv = precision_recall_curve(y_train, cv_probs)
+f2_cv = (5*pre_cv[:-1]*rec_cv[:-1]) / (4*pre_cv[:-1]+rec_cv[:-1] + 1e-9)
+best_idx = np.argmax(f2_cv)
+best_thr_cv = thr_cv[best_idx]
+
+#Tuning the threshold the wrong way: data leakage
+pre_te, rec_te, thr_te = precision_recall_curve(y_test, y_proba_lr)
+f2_te = (5 * pre_te[:-1] * rec_te[:-1]) / (4 * pre_te[:-1] + rec_te[:-1] + 1e-9)
+best_thr_test = thr_te[np.argmax(f2_te)]
+
+
+y_pred_default  = (y_proba_lr >= 0.5).astype(int)
+y_pred_cv_thr   = (y_proba_lr >= best_thr_cv).astype(int)
+y_pred_test_thr = (y_proba_lr >= best_thr_test).astype(int)
+
+
+def get_thr_score(y_pred, y_test):
+    p = precision_score(y_test, y_pred, zero_division=0)
+    r = recall_score(y_test, y_pred, zero_division=0)
+    f2 = fbeta_score(y_test, y_pred, beta=2, zero_division=0)
+
+    return p, r, f2
+
+p_default, r_default, f2_default = get_thr_score(y_pred_default, y_test)
+p_cv_thr, r_cv_thr, f2_cv_thr = get_thr_score(y_pred_cv_thr, y_test)
+p_test_thr, r_cv_thr, f2_cv_thr = get_thr_score(y_pred_test_thr, y_test)
+
+
+#CV-tuned: threshold found using out-of-fold probabilities — honest estimate
+#Test-tuned: threshold found by scanning test set directly — leakage
+#The test-tuned threshold exploits test set knowledge and will not hold in production
+
+#Why lowering the threshold increases recall?
+#Lower threshold = model raises alarm at lower confidence
+#More positives predicted -> more true positives caught (increases recall)
+#But also more false positives (decreases precision)
+#This is the fundamental precision-recall tradeoff
+
+
+print('Success')
