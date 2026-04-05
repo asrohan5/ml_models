@@ -181,10 +181,45 @@ rf_f1, rf_f2, rf_f05 = get_f_scores(rf_preds, y_test)
 
 #For mine safety -> we should use F2 (beta=2)
 #Missing a hazard costs orders of magnitude more than a false alarm
-#beta =2 weights recall 4× more than precision')
+#beta=2 weights recall 4× more than precision')
 
 #F1 hides the asymmetry — it would rank a model with P=0.9, R=0.1 (harmonic mean is symmetric by design)
 
+
+
+
+#--------------------------------------------------------------------------------------------------------------
+
+#ROC-AUC vs Average Precision
+
+def get_predict_proba(model, X_test, y_test):
+    y_proba_model = model.predict_proba(X_test)[:, 1]
+    
+    #ROC
+    fpr_model, tpr_model, _ = roc_curve(y_test, y_proba_model)
+    auc_model = roc_auc_score(y_test, y_proba_model)
+    #PR
+    pre_model, rec_model = precision_recall_curve(y_test, y_proba_model)
+    ap_model = average_precision_score(y_test, y_proba_model)
+
+    return fpr_model,tpr_model, auc_model, pre_model, rec_model, ap_model
+
+
+fpr_lr, tpr_lr, auc_lr, pre_lr, rec_lr, ap_lr = get_predict_proba(lr_clf, X_test_prep, y_test)
+
+fpr_rf, tpr_rf, auc_rf, pre_rf, rec_rf, ap_rf = get_predict_proba(rf_clf, X_test_prep, y_test)
+
+
+
+#ROC-AUC:LR = auc_lr, RF=auc_rf -> both look good
+#Avg Prec: LR = ap_lr, RF = ap_rf  -> both have significant room for improvement
+
+#Rare positive class OR FP cost -> FN cost -> we should use PR curve and Average Precision
+#Balanced classes OR both error types equally costly -> we should use ROC-AUC
+
+#Why ROC misleads? FPR = FP / (FP + TN). With 2,414 TN, the denominator is always large. Even 200 false alarms only moves FPR by 200/2414 = 0.08.
+
+#The PR curve skips TN entirely since it only asks about positive predictions.
 
 
 
