@@ -273,4 +273,176 @@ p_test_thr, r_cv_thr, f2_cv_thr = get_thr_score(y_pred_test_thr, y_test)
 #This is the fundamental precision-recall tradeoff
 
 
-print('Success')
+
+
+
+#--------------------------------------------------------------------------------------------------
+
+base = LogisticRegression(class_weight='balanced', max_iter=1000, random_state=42)
+
+# cross_val_score: one metric per fold
+cv_scores = cross_val_score(base, X_train_prep, y_train, cv=skf, scoring='recall')
+
+# cross_val_predict: one prediction per instance (out-of-fold)
+cv_preds = cross_val_predict(base, X_train_prep, y_train, cv=skf)
+
+#Wrong way: Predicting on training data
+base.fit(X_train_prep, y_train)
+train_preds = base.predict(X_train_prep)
+
+rec_cv_pred = recall_score(y_train, cv_preds, zero_division=0)
+rec_train = recall_score(y_train, train_preds, zero_division=0)
+
+
+#cross_val_predict recall (honest): rec_cv_pred
+#.predict(X_train) recall (inflated): rec_train
+#Inflation from training data leak: rec_train - rec_cv_pred
+
+#When to use each?
+#cross_val_score:comparing models, reporting overall CV performance
+#cross_val_predict: building confusion matrix, tuning thresholds, plotting PR/ROC
+#on training data -> needs out-of-fold predictions
+#.predict(X_train): NEVER for evaluation — model has already seen this data
+
+
+
+
+#--------------------------------------------------------------------------------------------------
+
+#Stratified KFold on Imbalanced Data
+
+
+def compute_positive_rate(y, indices):
+    return y.iloc[indices].mean()
+
+
+def evaluate_fold_distributions(X, y, n_splits=5, threshold=0.04, random_state=42):
+
+    kf = KFold(n_splits=n_splits, shuffle=True, random_state=random_state)
+    skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=random_state)
+
+    results = []
+
+    for fold_idx, ((_, val_idx_kf), (_, val_idx_skf)) in enumerate(
+        zip(kf.split(X), skf.split(X, y)), start=1
+    ):
+
+        kf_rate = compute_positive_rate(y, val_idx_kf)
+        skf_rate = compute_positive_rate(y, val_idx_skf)
+
+        # Flag low distribution issue
+        flag = "TOO LOW" if kf_rate < threshold else ""
+
+        results.append({
+            "fold": fold_idx,
+            "kfold_rate": kf_rate,
+            "stratified_rate": skf_rate,
+            "flag": flag
+        })
+
+    return pd.DataFrame(results)
+
+
+
+results_df = evaluate_fold_distributions(X_train_prep, y_train)
+print(results_df)
+
+regular_kf = KFold(n_splits=5, shuffle=True, random_state=42)
+stratified_kf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+
+
+#Max deviation from target:
+#Regular KFold: max(abs(r - y_train.mean()) for r in reg_rates)
+#Stratified KFold: max(abs(r - y_train.mean()) for r in strat_rates)
+
+#When a fold has near-zero positive rate
+#Training fold: model sees almost no hazards during that fold
+#Validation fold: recall computed on almost no positives — unreliable score
+
+#scikit-learn uses StratifiedKFold by default for classifiers in cross_val_score.
+#But if you manually create KFold() and pass it, you LOSE this protection.
+#Always use StratifiedKFold explicitly for imbalanced classification
+
+
+
+#-------------------------------------------------------------------------------------------------------
+
+
+X_tr_num = X_train[NUMERIC].values
+X_te_num = X_test[NUMERIC].values
+
+sc = StandardScaler()
+X_tr_sc = sc.fit_transform(X_tr_num)
+X_te_sc = sc.transform(X_te_num)
+
+for model, needs_scale in [
+    (sgd_clf, True),
+    (lr_clf, True),
+    (rf_clf, False)]:
+
+    model.fit(X_tr_num, y_train)
+    r_unsc = recall_score(y_test, model.predict(X_te_num), zero_division=0)
+
+    model.fit(X_tr_sc, y_train)
+    r_sc = recall_score(y_test, model.predict(X_te_sc), zero_division=0)
+
+    delta = r_sc - r_unsc
+    expected = '(high impact expected)' if needs_scale else '(no impact expected)'
+    
+    print(f'{r_unsc} : {r_sc} : {delta} : {expected}')
+
+
+#Why gradient/distance models are sensitive to scale?
+#energy ranges from 0 to 10^8, gpuls ranges 0 to ~700
+#Gradient steps in energy dimensions are 10^5 times larger
+#The loss surface is badly conditioned — convergence is slow or wrong
+
+#Why tree models are scale-invariant?
+#Trees split on thresholds: if energy > 5000
+#Multiplying all energy values by 100 shifts the threshold, not the split logic
+#The model learns the same decision boundary regardless of scale
+#Models requiring scaling: SGD, LR, SVM, KNN, Neural Networks
+#Models not requiring scaling: Decision Tree, Random Forest, Gradient Boosting, Naive Bayes
+
+
+
+
+#::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+# Final evaluation using optimal CV-tuned threshold
+
+
+summary = []
+for name, model in [('LogisticRegression', lr_clf), ('RandomForest', rf_clf) ]:
+    # CV threshold tuning
+    cv_pr = cross_val_predict(model, X_train_prep, y_train, cv=skf, method='predict_proba')[:, 1]
+    p_cv, r_cv, t_cv = precision_recall_curve(y_train, cv_pr)
+    f2s = (5*p_cv[:-1]*r_cv[:-1]) / (4*p_cv[:-1]+r_cv[:-1]+1e-9)
+    opt_thr = t_cv[np.argmax(f2s)]
+
+    # Final test
+    model.fit(X_train_prep, y_train)
+    y_prob = model.predict_proba(X_test_prep)[:, 1]
+    y_pred = (y_prob >= opt_thr).astype(int)
+
+    p  = precision_score(y_test, y_pred, zero_division=0)
+    r  = recall_score(y_test, y_pred, zero_division=0)
+    f2 = fbeta_score(y_test, y_pred, beta=2, zero_division=0)
+    cm_final = confusion_matrix(y_test, y_pred)
+    _, fp_, fn_, tp_ = cm_final.ravel()
+
+    summary.append({'name':name, 'p': p, 'r': r, 'f2': f2, 'tp': tp_, 'fp': fp_, 'fn': fn_})
+
+    print(f'{name} (threhold={opt_thr:.3f})')
+    print(f'  Precision:       {p:.3f}  ({fp_} false alarms)')
+    print(f'  Recall:          {r:.3f}  ({tp_}/{tp_+fn_} hazards caught)')
+    print(f'  F2 (primary):    {f2:.3f}')
+    print(f'  Missed hazards:  {fn_}')
+
+
+best = max(summary, key=lambda x: x['f2'])
+
+print(f'Best model: {best["name"]}')
+print(f'Catches {best["tp"]}/{best["tp"]+best["fn"]} hazardous shifts (recall={best["r"]:.1%})')
+print(f'Generates {best["fp"]} false alarms over the test period')
+print(f'Misses {best["fn"]} hazards — each a potential rockburst with workers present')
