@@ -122,7 +122,7 @@ def get_model_scores(model, X_train, y_train, X_test, y_test):
 
 sgd_clf = SGDClassifier(loss='hinge', class_weight='balanced', random_state=42, max_iter=1000)
 
-lr_clf = LogisticRegression(class_weight='balanced', max_iter=1000, random_state=42)
+lr_clf = LogisticRegression(class_weight='balanced', max_iter=5000, random_state=42)
 
 dummy_maj  = DummyClassifier(strategy='most_frequent').fit(X_train_prep, y_train)
 
